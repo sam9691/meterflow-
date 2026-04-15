@@ -1,34 +1,24 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+// using zustand with persist so the user stays logged in on refresh
 export const useAuthStore = create(
   persist(
-    (set, get) => ({
+    (set) => ({
       user: null,
       accessToken: null,
       isAuthenticated: false,
 
-      setUser: (user) => set({ user, isAuthenticated: !!user }),
-      setAccessToken: (token) => set({ accessToken: token }),
-
-      login: (user, accessToken) =>
-        set({ user, accessToken, isAuthenticated: true }),
-
-      logout: () =>
-        set({ user: null, accessToken: null, isAuthenticated: false }),
-
+      login: (user, accessToken) => set({ user, accessToken, isAuthenticated: true }),
+      logout: () => set({ user: null, accessToken: null, isAuthenticated: false }),
+      setAccessToken: (accessToken) => set({ accessToken }),
       updateUser: (updates) =>
-        set((state) => ({
-          user: state.user ? { ...state.user, ...updates } : null,
-        })),
+        set((state) => ({ user: state.user ? { ...state.user, ...updates } : null })),
     }),
     {
-      name: 'meterflow-auth',
-      partialize: (state) => ({
-        user: state.user,
-        accessToken: state.accessToken,
-        isAuthenticated: state.isAuthenticated,
-      }),
+      name: 'mf-auth',
+      // only persist what we need - don't store sensitive stuff
+      partialize: (s) => ({ user: s.user, accessToken: s.accessToken, isAuthenticated: s.isAuthenticated }),
     }
   )
 );
