@@ -1,96 +1,66 @@
 const logger = require('../utils/logger');
 
-/**
- * Centralized error handling middleware
- */
 const errorHandler = (err, req, res, next) => {
-  let statusCode = err.statusCode || 500;
+  let status = err.statusCode || 500;
   let message = err.message || 'Internal Server Error';
   let errors = null;
 
-  // Log the error
-  if (statusCode >= 500) {
-    logger.error(`[${req.method}] ${req.path} - ${statusCode}: ${message}`, {
-      stack: err.stack,
-      body: req.body,
-      params: req.params,
-      query: req.query,
-    });
+  if (status >= 500) {
+    logger.error(`${req.method} ${req.path} — ${status}: ${message}`, { stack: err.stack });
   } else {
-    logger.warn(`[${req.method}] ${req.path} - ${statusCode}: ${message}`);
+    logger.warn(`${req.method} ${req.path} — ${status}: ${message}`);
   }
 
-  // Mongoose validation error
+  // mongoose validation
   if (err.name === 'ValidationError') {
-    statusCode = 400;
+    status = 400;
     message = 'Validation failed';
-    errors = Object.values(err.errors).map((e) => ({
-      field: e.path,
-      message: e.message,
-    }));
+    errors = Object.values(err.errors).map((e) => ({ field: e.path, message: e.message }));
   }
 
-  // Mongoose duplicate key error
+  // duplicate key (e.g. email already exists)
   if (err.code === 11000) {
-    statusCode = 409;
+    status = 409;
     const field = Object.keys(err.keyValue)[0];
     message = `${field.charAt(0).toUpperCase() + field.slice(1)} already exists`;
   }
 
-  // Mongoose cast error (invalid ObjectId)
+  // bad objectid
   if (err.name === 'CastError') {
-    statusCode = 400;
-    message = `Invalid ${err.path}: ${err.value}`;
+    status = 400;
+    message = `Invalid ${err.path}`;
   }
 
-  // JWT errors
   if (err.name === 'JsonWebTokenError') {
-    statusCode = 401;
+    status = 401;
     message = 'Invalid token';
   }
 
   if (err.name === 'TokenExpiredError') {
-    statusCode = 401;
+    status = 401;
     message = 'Token expired';
   }
 
-  // Express validator errors
-  if (err.type === 'validation') {
-    statusCode = 400;
-    message = 'Validation failed';
-    errors = err.errors;
-  }
-
-  const response = {
+  const body = {
     success: false,
     message,
     timestamp: new Date().toISOString(),
   };
 
-  if (errors) response.errors = errors;
+  if (errors) body.errors = errors;
+  if (process.env.NODE_ENV === 'development') body.stack = err.stack;
 
-  // Include stack trace in development
-  if (process.env.NODE_ENV === 'development') {
-    response.stack = err.stack;
-  }
-
-  res.status(statusCode).json(response);
+  res.status(status).json(body);
 };
 
-/**
- * 404 handler - must be placed after all routes
- */
 const notFoundHandler = (req, res) => {
   res.status(404).json({
     success: false,
-    message: `Route ${req.method} ${req.originalUrl} not found`,
+    message: `${req.method} ${req.originalUrl} not found`,
     timestamp: new Date().toISOString(),
   });
 };
 
-/**
- * Custom error class
- */
 class AppError extends Error {
   constructor(message, statusCode) {
     super(message);
