@@ -5,125 +5,78 @@ const { AppError } = require('../middleware/errorHandler');
 const logger = require('../utils/logger');
 
 class AuthService {
-  /**
-   * Generate access token (short-lived)
-   */
   generateAccessToken(userId) {
     return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRES_IN || '15m',
     });
   }
 
-  /**
-   * Generate refresh token (long-lived)
-   */
   generateRefreshToken(userId) {
     return jwt.sign({ id: userId }, process.env.JWT_REFRESH_SECRET, {
       expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
     });
   }
 
-  /**
-   * Set auth cookies
-   */
   setAuthCookies(res, accessToken, refreshToken) {
-    const isProduction = process.env.NODE_ENV === 'production';
+    const prod = process.env.NODE_ENV === 'production';
 
     res.cookie('accessToken', accessToken, {
       httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? 'strict' : 'lax',
-      maxAge: 15 * 60 * 1000, // 15 minutes
+      secure: prod,
+      sameSite: prod ? 'strict' : 'lax',
+      maxAge: 15 * 60 * 1000,
     });
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? 'strict' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      secure: prod,
+      sameSite: prod ? 'strict' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/api/auth/refresh',
     });
   }
 
-  /**
-   * Clear auth cookies
-   */
   clearAuthCookies(res) {
     res.clearCookie('accessToken');
     res.clearCookie('refreshToken', { path: '/api/auth/refresh' });
   }
 
-  /**
-   * Register a new user
-   */
-  async register(userData) {
-    const { name, email, password, role = 'api_owner' } = userData;
+  async register({ name, email, password, role = 'api_owner' }) {
+    const exists = await userRepository.findByEmail(email);
+    if (exists) throw new AppError('Email already registered', 409);
 
-    // Check if email already exists
-    const existingUser = await userRepository.findByEmail(email);
-    if (existingUser) {
-      throw new AppError('Email already registered', 409);
-    }
-
-    // Create user
     const user = await userRepository.create({ name, email, password, role });
 
-    // Generate tokens
     const accessToken = this.generateAccessToken(user._id);
     const refreshToken = this.generateRefreshToken(user._id);
-
-    // Store refresh token
     await userRepository.updateRefreshTokens(user._id, [refreshToken]);
 
-    logger.info(`New user registered: ${email}`);
-
+    logger.info(`New user: ${email}`);
     return { user, accessToken, refreshToken };
   }
 
-  /**
-   * Login user
-   */
   async login(email, password) {
-    // Find user with password
     const user = await userRepository.findByEmail(email, true);
-    if (!user) {
-      throw new AppError('Invalid email or password', 401);
-    }
+    if (!user) throw new AppError('Invalid email or password', 401);
+    if (!user.isActive) throw new AppError('Account deactivated', 401);
 
-    if (!user.isActive) {
-      throw new AppError('Account has been deactivated', 401);
-    }
+    const valid = await user.comparePassword(password);
+    if (!valid) throw new AppError('Invalid email or password', 401);
 
-    // Verify password
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      throw new AppError('Invalid email or password', 401);
-    }
-
-    // Generate tokens
     const accessToken = this.generateAccessToken(user._id);
     const refreshToken = this.generateRefreshToken(user._id);
 
-    // Rotate refresh tokens (keep last 5)
-    const existingTokens = user.refreshTokens || [];
-    const updatedTokens = [...existingTokens.slice(-4), refreshToken];
-    await userRepository.updateRefreshTokens(user._id, updatedTokens);
-
-    // Update last login
+    // keep last 5 refresh tokens, rotate out old ones
+    const tokens = [...(user.refreshTokens || []).slice(-4), refreshToken];
+    await userRepository.updateRefreshTokens(user._id, tokens);
     await userRepository.updateById(user._id, { lastLoginAt: new Date() });
 
-    logger.info(`User logged in: ${email}`);
-
+    logger.info(`Login: ${email}`);
     return { user, accessToken, refreshToken };
   }
 
-  /**
-   * Refresh access token
-   */
   async refreshToken(refreshToken) {
-    if (!refreshToken) {
-      throw new AppError('Refresh token required', 401);
-    }
+    if (!refreshToken) throw new AppError('Refresh token required', 401);
 
     let decoded;
     try {
@@ -133,111 +86,63 @@ class AuthService {
     }
 
     const user = await userRepository.findByIdWithTokens(decoded.id);
-    if (!user) {
-      throw new AppError('User not found', 401);
-    }
+    if (!user) throw new AppError('User not found', 401);
 
-    // Check if refresh token is in the stored list
-    if (!user.refreshTokens || !user.refreshTokens.includes(refreshToken)) {
-      // Token reuse detected - clear all tokens (security measure)
+    if (!user.refreshTokens?.includes(refreshToken)) {
+      // token reuse detected - nuke all tokens as a security measure
       await userRepository.updateRefreshTokens(user._id, []);
-      throw new AppError('Refresh token reuse detected. Please login again', 401);
+      throw new AppError('Token reuse detected. Please login again.', 401);
     }
 
-    // Generate new tokens (rotation)
-    const newAccessToken = this.generateAccessToken(user._id);
-    const newRefreshToken = this.generateRefreshToken(user._id);
+    const newAccess = this.generateAccessToken(user._id);
+    const newRefresh = this.generateRefreshToken(user._id);
 
-    // Replace old refresh token with new one
-    const updatedTokens = user.refreshTokens
-      .filter((t) => t !== refreshToken)
-      .concat(newRefreshToken);
-    await userRepository.updateRefreshTokens(user._id, updatedTokens);
+    const updated = user.refreshTokens.filter((t) => t !== refreshToken).concat(newRefresh);
+    await userRepository.updateRefreshTokens(user._id, updated);
 
-    return { user, accessToken: newAccessToken, refreshToken: newRefreshToken };
+    return { user, accessToken: newAccess, refreshToken: newRefresh };
   }
 
-  /**
-   * Logout user
-   */
   async logout(userId, refreshToken) {
     const user = await userRepository.findByIdWithTokens(userId);
-    if (user && user.refreshTokens) {
-      const updatedTokens = user.refreshTokens.filter((t) => t !== refreshToken);
-      await userRepository.updateRefreshTokens(userId, updatedTokens);
+    if (user?.refreshTokens) {
+      await userRepository.updateRefreshTokens(
+        userId,
+        user.refreshTokens.filter((t) => t !== refreshToken)
+      );
     }
   }
 
-  /**
-   * Change password
-   */
   async changePassword(userId, currentPassword, newPassword) {
     const user = await userRepository.findByEmail(
       (await userRepository.findById(userId)).email,
       true
     );
 
-    const isValid = await user.comparePassword(currentPassword);
-    if (!isValid) {
-      throw new AppError('Current password is incorrect', 400);
-    }
+    const valid = await user.comparePassword(currentPassword);
+    if (!valid) throw new AppError('Current password is incorrect', 400);
 
     user.password = newPassword;
     await user.save();
 
-    // Invalidate all refresh tokens
+    // invalidate all sessions
     await userRepository.updateRefreshTokens(userId, []);
-
-    logger.info(`Password changed for user: ${userId}`);
+    logger.info(`Password changed: ${userId}`);
   }
 
-  /**
-   * Generate password reset token
-   */
   async forgotPassword(email) {
     const user = await userRepository.findByEmail(email);
-    if (!user) {
-      // Don't reveal if email exists
-      return null;
-    }
+    if (!user) return null; // don't reveal if email exists
 
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+    const token = crypto.randomBytes(32).toString('hex');
+    const hashed = crypto.createHash('sha256').update(token).digest('hex');
 
     await userRepository.updateById(user._id, {
-      passwordResetToken: hashedToken,
-      passwordResetExpires: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
+      passwordResetToken: hashed,
+      passwordResetExpires: new Date(Date.now() + 10 * 60 * 1000), // 10 min
     });
 
-    return { user, resetToken };
-  }
-
-  /**
-   * Reset password with token
-   */
-  async resetPassword(token, newPassword) {
-    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
-
-    const user = await userRepository.findByEmail(
-      (
-        await require('../models/User').findOne({
-          passwordResetToken: hashedToken,
-          passwordResetExpires: { $gt: Date.now() },
-        })
-      )?.email,
-      true
-    );
-
-    if (!user) {
-      throw new AppError('Invalid or expired reset token', 400);
-    }
-
-    user.password = newPassword;
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-    await user.save();
-
-    await userRepository.updateRefreshTokens(user._id, []);
+    return { user, resetToken: token };
   }
 }
 

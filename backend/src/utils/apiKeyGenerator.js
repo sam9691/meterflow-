@@ -1,54 +1,37 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
-/**
- * Generates a secure API key with prefix
- * Format: mf_live_<random> or mf_test_<random>
- */
-const generateApiKey = (environment = 'live') => {
-  const prefix = environment === 'test' ? 'mf_test_' : 'mf_live_';
-  const randomBytes = crypto.randomBytes(32).toString('hex');
-  return `${prefix}${randomBytes}`;
-};
+// format: mf_live_<64 hex chars> or mf_test_<64 hex chars>
+function generateApiKey(env = 'live') {
+  const prefix = env === 'test' ? 'mf_test_' : 'mf_live_';
+  return `${prefix}${crypto.randomBytes(32).toString('hex')}`;
+}
 
-/**
- * Hash an API key for secure storage
- */
-const hashApiKey = async (apiKey) => {
+// bcrypt hash for secure storage - slow by design
+async function hashApiKey(key) {
   const salt = await bcrypt.genSalt(12);
-  return bcrypt.hash(apiKey, salt);
-};
+  return bcrypt.hash(key, salt);
+}
 
-/**
- * Compare raw API key with stored hash
- */
-const compareApiKey = async (rawKey, hashedKey) => {
-  return bcrypt.compare(rawKey, hashedKey);
-};
+async function compareApiKey(raw, hashed) {
+  return bcrypt.compare(raw, hashed);
+}
 
-/**
- * Generate a short display version of the key (for UI)
- * Shows first 12 chars + masked middle + last 4 chars
- */
-const maskApiKey = (apiKey) => {
-  if (!apiKey || apiKey.length < 20) return '***';
-  const prefix = apiKey.substring(0, 12);
-  const suffix = apiKey.substring(apiKey.length - 4);
-  return `${prefix}${'*'.repeat(16)}${suffix}`;
-};
+// sha256 for fast lookups - we index this in mongo
+function generateKeyLookupHash(key) {
+  return crypto.createHash('sha256').update(key).digest('hex');
+}
 
-/**
- * Generate a SHA-256 lookup hash for fast key lookup
- * (bcrypt is slow for lookup, so we store a fast hash for indexing)
- */
-const generateKeyLookupHash = (apiKey) => {
-  return crypto.createHash('sha256').update(apiKey).digest('hex');
-};
+// show first 12 chars + stars + last 4 in the UI
+function maskApiKey(key) {
+  if (!key || key.length < 20) return '***';
+  return `${key.substring(0, 12)}${'*'.repeat(16)}${key.slice(-4)}`;
+}
 
 module.exports = {
   generateApiKey,
   hashApiKey,
   compareApiKey,
-  maskApiKey,
   generateKeyLookupHash,
+  maskApiKey,
 };
