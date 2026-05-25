@@ -35,13 +35,23 @@ const getRedisClient = () => {
 
 // Separate connection for BullMQ (requires separate connections)
 const createBullMQConnection = () => {
-  return new Redis({
+  const conn = new Redis({
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT) || 6379,
     password: process.env.REDIS_PASSWORD || undefined,
     maxRetriesPerRequest: null, // Required for BullMQ
     enableReadyCheck: false,
+    retryStrategy: (times) => {
+      if (times > 3) return null; // Stop retrying — Redis not available
+      return Math.min(times * 1000, 3000);
+    },
   });
+
+  // Silence reconnect spam — server.js already warns once at startup
+  conn.on('error', () => {});
+  conn.on('reconnecting', () => {});
+
+  return conn;
 };
 
 module.exports = { getRedisClient, createBullMQConnection };
