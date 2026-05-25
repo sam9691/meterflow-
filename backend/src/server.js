@@ -14,19 +14,13 @@ const startServer = async () => {
     // Connect to MongoDB
     await connectDB();
 
-    // Initialize Redis (non-blocking)
-    try {
-      getRedisClient();
-    } catch (err) {
-      logger.warn(`Redis connection failed: ${err.message}. Rate limiting will use memory.`);
-    }
+    // Initialize Redis (non-blocking, lazy — connects on first use)
+    getRedisClient();
 
-    // Start BullMQ worker (non-blocking)
-    try {
-      startBillingWorker();
-    } catch (err) {
-      logger.warn(`BullMQ worker failed to start: ${err.message}`);
-    }
+    // Start BullMQ worker (non-blocking, skips if Redis is unavailable)
+    startBillingWorker().catch((err) =>
+      logger.warn(`BullMQ worker failed to start: ${err.message}`)
+    );
 
     // Initialize cron jobs
     initCronJobs();
@@ -71,11 +65,21 @@ const startServer = async () => {
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-    process.on('unhandledRejection', (reason, promise) => {
-      logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    const isRedisError = (err) => {
+      if (!err) return false;
+      if (err.code === 'ECONNREFUSED') return true;
+      // AggregateError from ioredis wraps multiple ECONNREFUSED errors
+      if (err.errors && err.errors.every((e) => e.code === 'ECONNREFUSED')) return true;
+      return false;
+    };
+
+    process.on('unhandledRejection', (reason) => {
+      if (isRedisError(reason)) return; // Redis not running — app works without it
+      logger.error('Unhandled Rejection:', reason);
     });
 
     process.on('uncaughtException', (error) => {
+      if (isRedisError(error)) return; // Redis not running — app works without it
       logger.error('Uncaught Exception:', error);
       process.exit(1);
     });
