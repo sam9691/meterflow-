@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "pnpm exec nodemon src/server.js",
+    "seed": "node src/scripts/seed.js",
     "test": "pnpm exec jest --runInBand --forceExit",
     "test:coverage": "pnpm exec jest --coverage --runInBand --forceExit",
     "lint": "eslint src/**/*.js"
